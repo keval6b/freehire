@@ -1039,6 +1039,7 @@ type OauthAuthCode struct {
 	ExpiresAt           pgtype.Timestamptz `json:"expires_at"`
 	ConsumedAt          pgtype.Timestamptz `json:"consumed_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	TokenVersion        int32              `json:"token_version"`
 }
 
 type OauthClient struct {

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	oauth2errors "github.com/go-oauth2/oauth2/v4/errors"
+	"github.com/go-oauth2/oauth2/v4/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -72,6 +76,7 @@ func (m *memStore) InsertOAuthAuthCode(_ context.Context, arg db.InsertOAuthAuth
 		CodeHash: arg.CodeHash, ClientID: arg.ClientID, UserID: arg.UserID, RedirectUri: arg.RedirectUri,
 		CodeChallenge: arg.CodeChallenge, CodeChallengeMethod: arg.CodeChallengeMethod,
 		Resource: arg.Resource, Scope: arg.Scope, ExpiresAt: arg.ExpiresAt,
+		TokenVersion: arg.TokenVersion,
 	}
 	return nil
 }
@@ -80,7 +85,7 @@ func (m *memStore) GetOAuthAuthCode(_ context.Context, codeHash string) (db.GetO
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	row, ok := m.codes[codeHash]
-	if !ok || m.consumed[codeHash] || !row.ExpiresAt.Time.After(time.Now()) {
+	if !ok || m.consumed[codeHash] || !row.ExpiresAt.Time.After(time.Now()) || row.TokenVersion != m.version[row.UserID] {
 		return db.GetOAuthAuthCodeRow{}, pgx.ErrNoRows
 	}
 	return row, nil
@@ -211,6 +216,43 @@ func (m *memStore) GetUserTokenVersion(_ context.Context, id int64) (int32, erro
 func s256(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return strings.TrimRight(base64.URLEncoding.EncodeToString(sum[:]), "=")
+}
+
+func TestAuthorizeDoesNotRedirectToAnUnregisteredURI(t *testing.T) {
+	mem := newMem()
+	registered := "http://127.0.0.1:8765/callback"
+	if err := mem.UpsertOAuthClient(context.Background(), db.UpsertOAuthClientParams{
+		ClientID: "fhc_test", ClientName: "Test host", RedirectUris: []string{registered},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{
+		Origin: "https://freehire.test",
+		Store:  mem,
+		AuthorizeUser: func(http.ResponseWriter, *http.Request) (string, error) {
+			t.Fatal("consent ran for an unregistered redirect")
+			return "1", nil
+		},
+	})
+	q := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {"fhc_test"},
+		"redirect_uri":          {"https://evil.example/cb"},
+		"code_challenge":        {s256("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")},
+		"code_challenge_method": {"S256"},
+		"resource":              {srv.Resource()},
+		"decision":              {"allow"},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/authorize", strings.NewReader(q.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	srv.Authorize(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "" {
+		t.Fatalf("unregistered redirect_uri became Location %s", loc)
+	}
 }
 
 func TestAuthorizationCodePKCEAndRefreshDoesNotExtend(t *testing.T) {
@@ -421,6 +463,135 @@ func TestMetadataAndChallenge(t *testing.T) {
 	body, _ := io.ReadAll(rec.Body)
 	if !strings.Contains(string(body), srv.Resource()) {
 		t.Fatalf("body %s", body)
+	}
+}
+
+func TestCodeDiesWhenTheAccountGenerationMoves(t *testing.T) {
+	mem := newMem()
+	redirectURI := "http://127.0.0.1:8765/callback"
+	if err := mem.UpsertOAuthClient(context.Background(), db.UpsertOAuthClientParams{
+		ClientID: "fhc_test", ClientName: "Test host", RedirectUris: []string{redirectURI},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{
+		Origin: "https://freehire.test", Store: mem,
+		AuthorizeUser: func(http.ResponseWriter, *http.Request) (string, error) { return "1", nil },
+	})
+	verifier := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	q := url.Values{
+		"response_type": {"code"}, "client_id": {"fhc_test"}, "redirect_uri": {redirectURI},
+		"code_challenge": {s256(verifier)}, "code_challenge_method": {"S256"},
+		"resource": {srv.Resource()},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/authorize?"+q.Encode(), nil)
+	srv.Authorize(rec, req)
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil || loc.Query().Get("code") == "" {
+		t.Fatalf("authorize %d %s", rec.Code, rec.Body.String())
+	}
+	mem.version[1] = 2
+	form := url.Values{
+		"grant_type": {"authorization_code"}, "code": {loc.Query().Get("code")},
+		"redirect_uri": {redirectURI}, "client_id": {"fhc_test"},
+		"code_verifier": {verifier}, "resource": {srv.Resource()},
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	srv.Token(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatal("a code issued under the old generation was exchanged")
+	}
+}
+
+func TestGrantInsertRefusesAGenerationThatMoved(t *testing.T) {
+	mem := newMem()
+	mem.version[1] = 2
+	ts := &tokenStore{
+		q: mem, resource: "https://freehire.test" + AccountPath,
+		clients: &clientStore{q: mem, cimd: map[string]clientRecord{}},
+	}
+	ti := models.NewToken()
+	ti.SetAccess("fho_plain")
+	ti.SetRefresh("fhr_plain")
+	ti.SetUserID("1")
+	ti.SetClientID("fhc_test")
+	ti.SetScope(ScopeAccount)
+	ti.SetExtension(url.Values{
+		"resource":           {ts.resource},
+		"code_token_version": {"1"},
+	})
+	if err := ts.Create(context.Background(), ti); !errors.Is(err, oauth2errors.ErrInvalidGrant) {
+		t.Fatalf("err = %v, want invalid_grant", err)
+	}
+	if len(mem.grants) != 0 {
+		t.Fatal("a grant was inserted after the generation moved")
+	}
+
+	ti.SetExtension(url.Values{"resource": {ts.resource}})
+	if err := ts.Create(context.Background(), ti); !errors.Is(err, oauth2errors.ErrInvalidGrant) {
+		t.Fatalf("missing generation err = %v", err)
+	}
+}
+
+type consumeZero struct{ Store }
+
+func (consumeZero) ConsumeOAuthAuthCode(context.Context, string) (int64, error) { return 0, nil }
+
+func TestRemoveByCodeRejectsAConsumedCode(t *testing.T) {
+	ts := &tokenStore{q: consumeZero{newMem()}}
+	err := ts.RemoveByCode(context.Background(), "fhz_anything")
+	if !errors.Is(err, oauth2errors.ErrInvalidAuthorizeCode) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCIMDRejectsRedirect(t *testing.T) {
+	mux := http.NewServeMux()
+	ts := httptest.NewTLSServer(mux)
+	defer ts.Close()
+	start := ts.URL + "/start"
+	mux.HandleFunc("/real.json", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"client_id":     start,
+			"client_name":   "Claude",
+			"redirect_uris": []string{"http://127.0.0.1:9/cb"},
+		})
+	})
+	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, ts.URL+"/real.json", http.StatusFound)
+	})
+	srv := New(Config{
+		Origin: "https://freehire.test", Store: newMem(), HTTPClient: ts.Client(),
+		AuthorizeUser: func(http.ResponseWriter, *http.Request) (string, error) { return "1", nil },
+	})
+	if _, ok := srv.ClientName(context.Background(), start); ok {
+		t.Fatal("a redirected metadata document was accepted")
+	}
+}
+
+func TestCIMDFetchBudget(t *testing.T) {
+	s := &clientStore{}
+	for i := 0; i < cimdFetchBudget; i++ {
+		if !s.allowFetch() {
+			t.Fatalf("fetch %d was refused inside the budget", i)
+		}
+	}
+	if s.allowFetch() {
+		t.Fatal("metadata fetch budget did not stop")
+	}
+}
+
+func TestCIMDCacheStaysBounded(t *testing.T) {
+	s := &clientStore{cimd: map[string]clientRecord{}}
+	until := time.Now().Add(time.Hour)
+	for i := 0; i < cimdCacheCap+10; i++ {
+		s.remember(clientRecord{id: fmt.Sprintf("https://example.com/%d", i), name: "n", until: until})
+	}
+	if len(s.cimd) > cimdCacheCap {
+		t.Fatalf("cache len = %d, cap %d", len(s.cimd), cimdCacheCap)
 	}
 }
 

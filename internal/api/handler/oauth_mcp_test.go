@@ -2,15 +2,19 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	oauth2errors "github.com/go-oauth2/oauth2/v4/errors"
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/strelov1/freehire/internal/identity/auth"
 	"github.com/strelov1/freehire/internal/identity/auth/mcpoauth"
 	"github.com/strelov1/freehire/internal/platform/db"
 )
@@ -51,6 +55,28 @@ func (emptyOAuthStore) RevokeOAuthGrant(context.Context, db.RevokeOAuthGrantPara
 	return 0, nil
 }
 func (emptyOAuthStore) GetUserTokenVersion(context.Context, int64) (int32, error) { return 0, nil }
+
+func TestOAuthConsentDecisionIsPostOnly(t *testing.T) {
+	h := &authHandlers{frontendOrigin: "https://freehire.test"}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/oauth/authorize?decision=allow&client_id=fhc_x&redirect_uri=http://127.0.0.1/cb", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: "session"})
+	id, err := h.decideOAuthConsent(rec, req)
+	if err != nil || id != "" {
+		t.Fatalf("GET decision=allow returned %q %v", id, err)
+	}
+	if rec.Code != http.StatusFound || !strings.Contains(rec.Header().Get("Location"), "https://freehire.test/oauth/mcp?") {
+		t.Fatalf("status %d location %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/oauth/authorize", strings.NewReader("decision=deny"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	id, err = h.decideOAuthConsent(rec, req)
+	if id != "" || !errors.Is(err, oauth2errors.ErrAccessDenied) {
+		t.Fatalf("POST deny returned %q %v", id, err)
+	}
+}
 
 func TestAccountMCPMissingTokenChallenges(t *testing.T) {
 	srv := mcpoauth.New(mcpoauth.Config{Origin: "https://freehire.test", Store: emptyOAuthStore{}})

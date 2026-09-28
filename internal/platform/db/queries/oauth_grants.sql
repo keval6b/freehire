@@ -15,17 +15,22 @@ WHERE client_id = $1;
 -- name: InsertOAuthAuthCode :exec
 INSERT INTO oauth_auth_codes (
     code_hash, client_id, user_id, redirect_uri,
-    code_challenge, code_challenge_method, resource, scope, expires_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+    code_challenge, code_challenge_method, resource, scope, expires_at,
+    token_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 
 -- name: GetOAuthAuthCode :one
--- A live, unconsumed code. The caller still has to check the PKCE verifier.
-SELECT code_hash, client_id, user_id, redirect_uri, code_challenge,
-       code_challenge_method, resource, scope, expires_at
-FROM oauth_auth_codes
-WHERE code_hash = $1
-  AND consumed_at IS NULL
-  AND expires_at > now();
+-- A live, unconsumed code whose account generation has not moved. The caller
+-- still has to check the PKCE verifier. A bumped token_version (sign-out,
+-- password change) makes the code unreadable, the same way a grant fails.
+SELECT c.code_hash, c.client_id, c.user_id, c.redirect_uri, c.code_challenge,
+       c.code_challenge_method, c.resource, c.scope, c.expires_at, c.token_version
+FROM oauth_auth_codes c
+JOIN users u ON u.id = c.user_id
+WHERE c.code_hash = $1
+  AND c.consumed_at IS NULL
+  AND c.expires_at > now()
+  AND c.token_version = u.token_version;
 
 -- name: ConsumeOAuthAuthCode :execrows
 -- Single use. A second exchange finds no row.

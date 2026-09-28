@@ -2552,7 +2552,9 @@ type Querier interface {
 	// cases, which would otherwise be judged as the active `applied` stage by
 	// silence.ThresholdDays.
 	GetNudgeForDelivery(ctx context.Context, id int64) (GetNudgeForDeliveryRow, error)
-	// A live, unconsumed code. The caller still has to check the PKCE verifier.
+	// A live, unconsumed code whose account generation has not moved. The caller
+	// still has to check the PKCE verifier. A bumped token_version (sign-out,
+	// password change) makes the code unreadable, the same way a grant fails.
 	GetOAuthAuthCode(ctx context.Context, codeHash string) (GetOAuthAuthCodeRow, error)
 	GetOAuthClient(ctx context.Context, clientID string) (GetOAuthClientRow, error)
 	GetOAuthGrantByRefreshHash(ctx context.Context, refreshTokenHash pgtype.Text) (GetOAuthGrantByRefreshHashRow, error)
@@ -5858,16 +5860,19 @@ type Querier interface {
 	// the address verified — receiving the code IS proof of control, so a reset doubles as
 	// verification and an unverified account stops being a merge target.
 	//
-	// The account's API keys and MCP OAuth grants are destroyed in the same statement.
-	// A reset is how an owner takes an account back, so whoever knew the old password
-	// must lose every credential minted under it — and a key authenticates against
-	// api_keys alone, so bumping token_version does not reach it. A grant does check
-	// token_version, but the row would otherwise stay listed as a device until it
-	// expired; deleting it is the same revocation the keys get. The DELETEs are
-	// data-modifying CTEs rather than a second statement on purpose: Postgres runs
-	// them exactly once and to completion whether or not the primary query reads
-	// their output, which welds the revocation to the reset so no call site can
-	// perform one without the other.
+	// The account's API keys, MCP OAuth grants, and unexchanged authorization codes
+	// are destroyed in the same statement. A reset is how an owner takes an account
+	// back, so whoever knew the old password must lose every credential minted under
+	// it — and a key authenticates against api_keys alone, so bumping token_version
+	// does not reach it. A grant does check token_version, but the row would
+	// otherwise stay listed as a device until it expired; deleting it is the same
+	// revocation the keys get. A code fails the same generation check, so it cannot
+	// be exchanged after the bump; deleting it removes the row instead of leaving
+	// it until the code expires. The DELETEs are data-modifying CTEs rather than a
+	// second statement on purpose: Postgres runs them exactly once and to completion
+	// whether or not
+	// the primary query reads their output, which welds the revocation to the reset
+	// so no call site can perform one without the other.
 	ResetUserPassword(ctx context.Context, arg ResetUserPasswordParams) (int32, error)
 	// Catalogue pruning: the queries that find, and eventually remove, jobs that do not
 	// belong on an IT job board. See the catalog-pruning capability spec.
@@ -6074,11 +6079,13 @@ type Querier interface {
 	// first loses all three ways in. The keys matter most of the three: they are the only
 	// credential that survives a token_version bump (a key is matched against api_keys by
 	// its own hash and never consults users), and one minted with expires_at NULL would
-	// otherwise outlive the takeover forever. MCP grants are deleted in the same
-	// statement: they do fail on the version bump, and removing the rows is what stops
-	// them appearing as connected devices on an account the squatter no longer owns.
-	// Same data-modifying-CTE reasoning as ResetUserPassword — the revocation cannot
-	// be separated from the seizure.
+	// otherwise outlive the takeover forever. MCP grants and unexchanged
+	// authorization codes are deleted in the same statement: a grant fails on the
+	// version bump, and removing the row is what stops it appearing as a connected
+	// device on an account the squatter no longer owns. A code fails the same
+	// generation check, so deleting it only removes the row; it is not what stops
+	// the exchange. Same data-modifying-CTE reasoning as ResetUserPassword — the
+	// revocation cannot be separated from the seizure.
 	// Returns the new generation for the session the sign-in is about to mint.
 	SeizeUnverifiedAccount(ctx context.Context, id int64) (int32, error)
 	// ---------------------------------------------------------------------------

@@ -21,6 +21,11 @@ import (
 	"github.com/strelov1/freehire/internal/platform/db"
 )
 
+// cimdCacheCap bounds the Client ID Metadata Document cache. Entries expire
+// after ten minutes but a URL that is fetched once stays until something
+// evicts it, so an unbounded map is a memory leak with a public lookup in front.
+const cimdCacheCap = 256
+
 // Store is the sqlc surface this server persists through. *db.Queries
 // satisfies it; tests substitute a memory fake.
 type Store interface {
@@ -45,11 +50,17 @@ type clientRecord struct {
 }
 
 type clientStore struct {
-	q    Store
-	http *http.Client
-	mu   sync.Mutex
-	cimd map[string]clientRecord
+	q       Store
+	http    *http.Client
+	mu      sync.Mutex
+	cimd    map[string]clientRecord
+	fetches []time.Time
 }
+
+// cimdFetchBudget is how many metadata documents one process may retrieve in
+// a minute. Cache hits do not spend it. The consent page's server-side lookup
+// shares one source address, so this budget is not an IP limiter.
+const cimdFetchBudget = 30
 
 func (s *clientStore) GetByID(ctx context.Context, id string) (oauth2.ClientInfo, error) {
 	rec, err := s.lookup(ctx, id)
@@ -103,12 +114,21 @@ func (s *clientStore) fetchCIMD(ctx context.Context, id string) (clientRecord, e
 	if !AllowedRedirect(id) || !strings.HasPrefix(id, "https://") {
 		return clientRecord{}, nil
 	}
+	if !s.allowFetch() {
+		return clientRecord{}, nil
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, id, nil)
 	if err != nil {
 		return clientRecord{}, nil
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := s.http.Do(req)
+	// A redirect to another host can serve a document whose client_id is still
+	// the URL we were asked for. The metadata fetch does not follow any.
+	client := *s.http
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return errors.New("mcp oauth: client metadata must not redirect")
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return clientRecord{}, nil
 	}
@@ -129,10 +149,47 @@ func (s *clientStore) fetchCIMD(ctx context.Context, id string) (clientRecord, e
 		}
 	}
 	rec := clientRecord{id: doc.ClientID, name: doc.ClientName, redirects: doc.RedirectURIs, until: time.Now().Add(10 * time.Minute)}
-	s.mu.Lock()
-	s.cimd[id] = rec
-	s.mu.Unlock()
+	s.remember(rec)
 	return rec, nil
+}
+
+func (s *clientStore) allowFetch() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-time.Minute)
+	kept := s.fetches[:0]
+	for _, at := range s.fetches {
+		if at.After(cutoff) {
+			kept = append(kept, at)
+		}
+	}
+	s.fetches = kept
+	if len(s.fetches) >= cimdFetchBudget {
+		return false
+	}
+	s.fetches = append(s.fetches, now)
+	return true
+}
+
+func (s *clientStore) remember(rec clientRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for id, cached := range s.cimd {
+		if !now.Before(cached.until) {
+			delete(s.cimd, id)
+		}
+	}
+	if _, exists := s.cimd[rec.id]; !exists {
+		for len(s.cimd) >= cimdCacheCap {
+			for id := range s.cimd {
+				delete(s.cimd, id)
+				break
+			}
+		}
+	}
+	s.cimd[rec.id] = rec
 }
 
 type tokenStore struct {
@@ -172,6 +229,10 @@ func (s *tokenStore) saveCode(ctx context.Context, info oauth2.TokenInfo, resour
 	if err != nil {
 		return oauth2errors.ErrInvalidRequest
 	}
+	version, err := s.q.GetUserTokenVersion(ctx, userID)
+	if err != nil {
+		return err
+	}
 	expires := info.GetCodeCreateAt().Add(info.GetCodeExpiresIn())
 	return s.q.InsertOAuthAuthCode(ctx, db.InsertOAuthAuthCodeParams{
 		CodeHash:            hashToken(info.GetCode()),
@@ -183,6 +244,7 @@ func (s *tokenStore) saveCode(ctx context.Context, info oauth2.TokenInfo, resour
 		Resource:            resource,
 		Scope:               info.GetScope(),
 		ExpiresAt:           pgtype.Timestamptz{Time: expires, Valid: true},
+		TokenVersion:        version,
 	})
 }
 
@@ -213,6 +275,14 @@ func (s *tokenStore) saveGrant(ctx context.Context, info oauth2.TokenInfo, ext u
 	version, err := s.q.GetUserTokenVersion(ctx, userID)
 	if err != nil {
 		return err
+	}
+	// The code was read while the generation still matched. A bump between that
+	// read and this insert would store the new generation and undo the sign-out.
+	// A missing generation is the same refusal: this path only mints a grant
+	// from a code, and GetByCode always sets the key.
+	issued := ext.Get("code_token_version")
+	if issued == "" || issued != strconv.FormatInt(int64(version), 10) {
+		return oauth2errors.ErrInvalidGrant
 	}
 	deadline := time.Now().Add(GrantTTL)
 	row, err := s.q.InsertOAuthGrant(ctx, db.InsertOAuthGrantParams{
@@ -258,8 +328,17 @@ func (s *tokenStore) RemoveByCode(ctx context.Context, code string) error {
 	if code == "" {
 		return nil
 	}
-	_, err := s.q.ConsumeOAuthAuthCode(ctx, hashToken(code))
-	return err
+	n, err := s.q.ConsumeOAuthAuthCode(ctx, hashToken(code))
+	if err != nil {
+		return err
+	}
+	// The library consumes the code and then inserts the grant. A concurrent
+	// exchange can read the same live code; only the update that matches a row
+	// may continue.
+	if n == 0 {
+		return oauth2errors.ErrInvalidAuthorizeCode
+	}
+	return nil
 }
 
 func (s *tokenStore) RemoveByAccess(context.Context, string) error { return nil }
@@ -288,7 +367,10 @@ func (s *tokenStore) GetByCode(ctx context.Context, code string) (oauth2.TokenIn
 	}
 	ti.SetCodeCreateAt(time.Now())
 	ti.SetCodeExpiresIn(left)
-	ti.SetExtension(url.Values{"resource": {row.Resource}})
+	ti.SetExtension(url.Values{
+		"resource":           {row.Resource},
+		"code_token_version": {strconv.FormatInt(int64(row.TokenVersion), 10)},
+	})
 	return ti, nil
 }
 

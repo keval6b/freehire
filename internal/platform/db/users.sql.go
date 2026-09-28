@@ -848,6 +848,8 @@ WITH revoked_keys AS (
     DELETE FROM api_keys WHERE user_id = $1
 ), revoked_grants AS (
     DELETE FROM oauth_grants WHERE user_id = $1
+), revoked_codes AS (
+    DELETE FROM oauth_auth_codes WHERE user_id = $1
 )
 UPDATE users
 SET password_hash = $2, email_verified = true, token_version = token_version + 1
@@ -864,16 +866,19 @@ type ResetUserPasswordParams struct {
 // the address verified — receiving the code IS proof of control, so a reset doubles as
 // verification and an unverified account stops being a merge target.
 //
-// The account's API keys and MCP OAuth grants are destroyed in the same statement.
-// A reset is how an owner takes an account back, so whoever knew the old password
-// must lose every credential minted under it — and a key authenticates against
-// api_keys alone, so bumping token_version does not reach it. A grant does check
-// token_version, but the row would otherwise stay listed as a device until it
-// expired; deleting it is the same revocation the keys get. The DELETEs are
-// data-modifying CTEs rather than a second statement on purpose: Postgres runs
-// them exactly once and to completion whether or not the primary query reads
-// their output, which welds the revocation to the reset so no call site can
-// perform one without the other.
+// The account's API keys, MCP OAuth grants, and unexchanged authorization codes
+// are destroyed in the same statement. A reset is how an owner takes an account
+// back, so whoever knew the old password must lose every credential minted under
+// it — and a key authenticates against api_keys alone, so bumping token_version
+// does not reach it. A grant does check token_version, but the row would
+// otherwise stay listed as a device until it expired; deleting it is the same
+// revocation the keys get. A code fails the same generation check, so it cannot
+// be exchanged after the bump; deleting it removes the row instead of leaving
+// it until the code expires. The DELETEs are data-modifying CTEs rather than a
+// second statement on purpose: Postgres runs them exactly once and to completion
+// whether or not
+// the primary query reads their output, which welds the revocation to the reset
+// so no call site can perform one without the other.
 func (q *Queries) ResetUserPassword(ctx context.Context, arg ResetUserPasswordParams) (int32, error) {
 	row := q.db.QueryRow(ctx, resetUserPassword, arg.ID, arg.PasswordHash)
 	var token_version int32
@@ -886,6 +891,8 @@ WITH revoked_keys AS (
     DELETE FROM api_keys WHERE user_id = $1
 ), revoked_grants AS (
     DELETE FROM oauth_grants WHERE user_id = $1
+), revoked_codes AS (
+    DELETE FROM oauth_auth_codes WHERE user_id = $1
 )
 UPDATE users
 SET password_hash = NULL, email_verified = true, token_version = token_version + 1
@@ -899,11 +906,13 @@ RETURNING token_version
 // first loses all three ways in. The keys matter most of the three: they are the only
 // credential that survives a token_version bump (a key is matched against api_keys by
 // its own hash and never consults users), and one minted with expires_at NULL would
-// otherwise outlive the takeover forever. MCP grants are deleted in the same
-// statement: they do fail on the version bump, and removing the rows is what stops
-// them appearing as connected devices on an account the squatter no longer owns.
-// Same data-modifying-CTE reasoning as ResetUserPassword — the revocation cannot
-// be separated from the seizure.
+// otherwise outlive the takeover forever. MCP grants and unexchanged
+// authorization codes are deleted in the same statement: a grant fails on the
+// version bump, and removing the row is what stops it appearing as a connected
+// device on an account the squatter no longer owns. A code fails the same
+// generation check, so deleting it only removes the row; it is not what stops
+// the exchange. Same data-modifying-CTE reasoning as ResetUserPassword — the
+// revocation cannot be separated from the seizure.
 // Returns the new generation for the session the sign-in is about to mint.
 func (q *Queries) SeizeUnverifiedAccount(ctx context.Context, id int64) (int32, error) {
 	row := q.db.QueryRow(ctx, seizeUnverifiedAccount, id)

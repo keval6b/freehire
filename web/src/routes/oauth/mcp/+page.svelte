@@ -12,6 +12,7 @@
 <div class="mx-auto flex max-w-md flex-col gap-6 py-16">
   <div class="flex flex-col gap-2">
     <h1 class="text-2xl font-semibold tracking-tight">Connect {data.clientName}</h1>
+    <p class="break-all font-mono text-xs text-muted-foreground">{data.fields.client_id}</p>
     <p class="text-sm leading-relaxed text-muted-foreground">
       This host will search jobs and manage your saved applications as you. Access lasts 30 days.
       You can disconnect it from API keys at any time.

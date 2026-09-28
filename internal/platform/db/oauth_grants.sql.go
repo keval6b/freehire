@@ -28,12 +28,14 @@ func (q *Queries) ConsumeOAuthAuthCode(ctx context.Context, codeHash string) (in
 }
 
 const getOAuthAuthCode = `-- name: GetOAuthAuthCode :one
-SELECT code_hash, client_id, user_id, redirect_uri, code_challenge,
-       code_challenge_method, resource, scope, expires_at
-FROM oauth_auth_codes
-WHERE code_hash = $1
-  AND consumed_at IS NULL
-  AND expires_at > now()
+SELECT c.code_hash, c.client_id, c.user_id, c.redirect_uri, c.code_challenge,
+       c.code_challenge_method, c.resource, c.scope, c.expires_at, c.token_version
+FROM oauth_auth_codes c
+JOIN users u ON u.id = c.user_id
+WHERE c.code_hash = $1
+  AND c.consumed_at IS NULL
+  AND c.expires_at > now()
+  AND c.token_version = u.token_version
 `
 
 type GetOAuthAuthCodeRow struct {
@@ -46,9 +48,12 @@ type GetOAuthAuthCodeRow struct {
 	Resource            string             `json:"resource"`
 	Scope               string             `json:"scope"`
 	ExpiresAt           pgtype.Timestamptz `json:"expires_at"`
+	TokenVersion        int32              `json:"token_version"`
 }
 
-// A live, unconsumed code. The caller still has to check the PKCE verifier.
+// A live, unconsumed code whose account generation has not moved. The caller
+// still has to check the PKCE verifier. A bumped token_version (sign-out,
+// password change) makes the code unreadable, the same way a grant fails.
 func (q *Queries) GetOAuthAuthCode(ctx context.Context, codeHash string) (GetOAuthAuthCodeRow, error) {
 	row := q.db.QueryRow(ctx, getOAuthAuthCode, codeHash)
 	var i GetOAuthAuthCodeRow
@@ -62,6 +67,7 @@ func (q *Queries) GetOAuthAuthCode(ctx context.Context, codeHash string) (GetOAu
 		&i.Resource,
 		&i.Scope,
 		&i.ExpiresAt,
+		&i.TokenVersion,
 	)
 	return i, err
 }
@@ -128,8 +134,9 @@ func (q *Queries) GetOAuthGrantByRefreshHash(ctx context.Context, refreshTokenHa
 const insertOAuthAuthCode = `-- name: InsertOAuthAuthCode :exec
 INSERT INTO oauth_auth_codes (
     code_hash, client_id, user_id, redirect_uri,
-    code_challenge, code_challenge_method, resource, scope, expires_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    code_challenge, code_challenge_method, resource, scope, expires_at,
+    token_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 `
 
 type InsertOAuthAuthCodeParams struct {
@@ -142,6 +149,7 @@ type InsertOAuthAuthCodeParams struct {
 	Resource            string             `json:"resource"`
 	Scope               string             `json:"scope"`
 	ExpiresAt           pgtype.Timestamptz `json:"expires_at"`
+	TokenVersion        int32              `json:"token_version"`
 }
 
 func (q *Queries) InsertOAuthAuthCode(ctx context.Context, arg InsertOAuthAuthCodeParams) error {
@@ -155,6 +163,7 @@ func (q *Queries) InsertOAuthAuthCode(ctx context.Context, arg InsertOAuthAuthCo
 		arg.Resource,
 		arg.Scope,
 		arg.ExpiresAt,
+		arg.TokenVersion,
 	)
 	return err
 }

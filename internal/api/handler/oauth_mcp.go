@@ -31,6 +31,9 @@ func (h *authHandlers) mountMCPOAuth(api fiber.Router) {
 	limit := ratelimit.Middleware(h.throttler, ratelimit.KeyByIP("oauth"), 30, time.Minute)
 	api.Get("/oauth/authorization-server", h.oauthAuthorizationServer)
 	api.Get("/oauth/protected-resource", h.oauthProtectedResource)
+	// Name lookup stays off this limiter. The consent page calls it from the
+	// Node server, so an IP limit would be one bucket for every visitor. The
+	// outbound metadata fetch has its own budget inside the client store.
 	api.Get("/oauth/client", h.oauthClient)
 	api.All("/oauth/authorize", limit, adaptor.HTTPHandlerFunc(h.mcpOAuth.Authorize))
 	api.Post("/oauth/token", limit, adaptor.HTTPHandlerFunc(h.mcpOAuth.Token))
@@ -50,6 +53,13 @@ func newMCPOAuth(h *authHandlers) *mcpoauth.Server {
 }
 
 func (h *authHandlers) decideOAuthConsent(w http.ResponseWriter, r *http.Request) (string, error) {
+	// Allow and deny are the consent form's POST. A GET carries the session
+	// cookie (SameSite=Lax still sends it on a top-level navigation), so a
+	// decision on the authorize URL would approve the host without the click.
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, h.oauthConsentURL(r, ""), http.StatusFound)
+		return "", nil
+	}
 	switch r.FormValue("decision") {
 	case "deny":
 		return "", oauth2errors.ErrAccessDenied
