@@ -6,7 +6,7 @@
   import { consumeReauthDraft } from '$lib/recentAuth';
   import { locale } from '$lib/i18n/currentLocale.svelte';
   import { t } from '$lib/i18n/t';
-  import type { ApiKey, CreatedApiKey } from '$lib/types';
+  import type { ApiKey, CreatedApiKey, OAuthGrant } from '$lib/types';
   import { Button, ConfirmDialog } from '$lib/ui';
   import { timeAgo } from '$lib/utils';
   import { messages } from './ApiKeysView.messages';
@@ -39,11 +39,17 @@
   // Load once the session is confirmed (the boot-time /me resolution may still be
   // in flight when the page is opened directly), mirroring MyJobsView.
   const keysData = new AsyncData<ApiKey[]>([]);
+  const devicesData = new AsyncData<OAuthGrant[]>([]);
   $effect(() => {
-    if (isAuthenticated()) void keysData.run(() => api.listApiKeys());
+    if (isAuthenticated()) {
+      void keysData.run(() => api.listApiKeys());
+      void devicesData.run(() => api.listOAuthGrants());
+    }
   });
   const status = $derived(keysData.status);
   const keys = $derived(keysData.value);
+  const deviceStatus = $derived(devicesData.status);
+  const devices = $derived(devicesData.value);
 
   function onCreated(key: CreatedApiKey): void {
     revealed = key;
@@ -89,6 +95,46 @@
     revokeTarget = key;
     revokePassword = '';
     confirmRevokeOpen = true;
+  }
+
+  let deviceTarget = $state<OAuthGrant | null>(null);
+  let confirmDeviceOpen = $state(false);
+  let devicePassword = $state('');
+  let deviceIdentity = $state<ConfirmIdentity | null>(null);
+  let pendingGrantId = $state<number | null>(null);
+
+  $effect(() => {
+    const pending = consumeReauthDraft('revoke-oauth-grant');
+    if (!pending) return;
+    pendingGrantId = pending.grantId;
+  });
+  $effect(() => {
+    if (pendingGrantId === null) return;
+    const grant = devicesData.value.find((g) => g.id === pendingGrantId);
+    if (!grant) return;
+    pendingGrantId = null;
+    requestDeviceRevoke(grant);
+  });
+
+  function requestDeviceRevoke(grant: OAuthGrant): void {
+    deviceTarget = grant;
+    devicePassword = '';
+    confirmDeviceOpen = true;
+  }
+
+  async function revokeDevice(): Promise<void> {
+    const grant = deviceTarget;
+    if (!grant) return;
+    try {
+      if (!(await deviceIdentity?.prove())) throw new Error(s.deviceErrors.confirmFirst);
+      await api.revokeOAuthGrant(grant.id);
+      devicesData.value = devicesData.value.filter((g) => g.id !== grant.id);
+      devicePassword = '';
+    } catch (error) {
+      throw new Error(deviceIdentity?.handleRefusal(error) ?? s.deviceErrors.revokeFailed, {
+        cause: error,
+      });
+    }
   }
 
   async function revoke(): Promise<void> {
@@ -171,7 +217,7 @@
     {:else if keys.length === 0}
       <States state="empty" message={s.list.empty} />
     {:else}
-      <ul class="flex flex-col divide-y divide-border rounded-lg border border-border">
+      <ul aria-label={s.title} class="flex flex-col divide-y divide-border rounded-lg border border-border">
         {#each keys as key (key.id)}
           <li class="flex items-center justify-between gap-3 px-4 py-3">
             <div class="flex min-w-0 flex-col gap-0.5">
@@ -193,6 +239,41 @@
         {/each}
       </ul>
     {/if}
+
+    <section class="flex flex-col gap-3 border-t border-border pt-6">
+      <div class="flex flex-col gap-1">
+        <h2 class="text-lg font-semibold tracking-tight">{s.devices.title}</h2>
+        <p class="text-sm text-muted-foreground">{s.devices.intro}</p>
+      </div>
+      {#if deviceStatus === 'loading'}
+        <States state="loading" />
+      {:else if deviceStatus === 'error'}
+        <States state="error" message={s.devices.loadError} />
+      {:else if devices.length === 0}
+        <States state="empty" message={s.devices.empty} />
+      {:else}
+        <ul aria-label={s.devices.title} class="flex flex-col divide-y divide-border rounded-lg border border-border">
+          {#each devices as device (device.id)}
+            <li class="flex items-center justify-between gap-3 px-4 py-3">
+              <div class="flex min-w-0 flex-col gap-0.5">
+                <span class="truncate text-sm font-medium">{device.client_name}</span>
+                <span class="text-xs text-muted-foreground">
+                  {s.devices.connectedPrefix}
+                  {timeAgo(device.created_at, locale())} ·
+                  {device.last_used_at
+                    ? `${s.devices.lastUsedPrefix} ${timeAgo(device.last_used_at, locale())}`
+                    : s.devices.neverUsed}
+                  · {s.devices.expiresPrefix} {timeAgo(device.expires_at, locale())}
+                </span>
+              </div>
+              <Button variant="ghost" size="sm" onclick={() => requestDeviceRevoke(device)}>
+                {s.devices.revoke}
+              </Button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
   </div>
 
   <CreateApiKeyDialog bind:open={createOpen} {onCreated} />
@@ -215,6 +296,24 @@
       prompt={s.revokeDialog.confirmPrompt}
       draft={() => ({ surface: 'revoke-api-key', keyId: revokeTarget?.id ?? 0 })}
       active={confirmRevokeOpen}
+    />
+  </ConfirmDialog>
+
+  <ConfirmDialog
+    bind:open={confirmDeviceOpen}
+    title={`${s.deviceRevoke.titlePrefix} "${deviceTarget?.client_name ?? ''}"${s.deviceRevoke.titleSuffix}`}
+    description={s.deviceRevoke.description}
+    confirmLabel={s.deviceRevoke.confirmLabel}
+    variant="destructive"
+    onConfirm={revokeDevice}
+  >
+    <ConfirmIdentity
+      bind:this={deviceIdentity}
+      bind:password={devicePassword}
+      returnTo="/my/api-keys"
+      prompt={s.deviceRevoke.confirmPrompt}
+      draft={() => ({ surface: 'revoke-oauth-grant', grantId: deviceTarget?.id ?? 0 })}
+      active={confirmDeviceOpen}
     />
   </ConfirmDialog>
 {/if}

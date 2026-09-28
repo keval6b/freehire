@@ -1319,6 +1319,17 @@ export interface CreatedApiKey extends ApiKey {
   token: string;
 }
 
+/** An MCP host connected through the browser. The tokens themselves are never
+ *  returned. Timestamps are RFC3339 strings; `last_used_at` is null until the
+ *  host calls the account server. */
+export interface OAuthGrant {
+  id: number;
+  client_name: string;
+  created_at: string;
+  expires_at: string;
+  last_used_at: string | null;
+}
+
 /** The account's single saved-search webhook destination. Deliveries are
  *  plain, unsigned POSTs. Timestamps are RFC3339 strings or null;
  *  `disabled_at` is set once a delivery got a definitive 410 from the

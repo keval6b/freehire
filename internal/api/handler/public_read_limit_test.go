@@ -242,6 +242,10 @@ func publicReadRoutes(t *testing.T, throttler ratelimit.Throttler) (map[string]*
 		// machine ask this catalogue", with nothing deciding which is right — and both
 		// surfaces cost what /agent/jobs/search costs, because all three run that query.
 		"mcpappHandlers": mount((&mcpappHandlers{}).register),
+		// The authenticated account MCP. The bearer check sits behind the same
+		// agent-search budget: a missing grant is a 401, and the catalogue reads
+		// the tools then run cost what /agent/jobs/search costs.
+		"accountMCPHandlers": mount((&accountMCPHandlers{}).register),
 	}, iss
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/strelov1/freehire/internal/identity/accounts"
 	"github.com/strelov1/freehire/internal/identity/auth"
 	appleauth "github.com/strelov1/freehire/internal/identity/auth/apple"
+	"github.com/strelov1/freehire/internal/identity/auth/mcpoauth"
 	"github.com/strelov1/freehire/internal/identity/auth/mobileauth"
 	"github.com/strelov1/freehire/internal/identity/auth/oauth"
 	"github.com/strelov1/freehire/internal/identity/auth/recentauth"
@@ -82,6 +83,9 @@ type authHandlers struct {
 	// are nil until withAccountDeletion wires them.
 	accountDelete accountEraser
 	accountEmails accountEmailLookup
+	// mcpOAuth is the authorization server MCP hosts use. Nil when the handler
+	// was built without an issuer (tests that never mount those routes).
+	mcpOAuth *mcpoauth.Server
 }
 
 // withAccountDeletion wires the erase-my-account path. It is set after construction
@@ -93,7 +97,7 @@ func (h *authHandlers) withAccountDeletion(eraser accountEraser, emails accountE
 
 func newAuthHandlers(queries *db.Queries, pool *pgxpool.Pool, throttler ratelimit.Throttler, issuer *auth.Issuer, cookieSecure bool, cookieDomains []string, providers oauthRegistry, frontendOrigin string, extensionRedirectAllowlist []string, servedHosts []string) *authHandlers {
 	pushStore := pushnotify.NewQueriesStore(queries)
-	return &authHandlers{
+	h := &authHandlers{
 		queries:                    queries,
 		issuer:                     issuer,
 		cookieSecure:               cookieSecure,
@@ -107,9 +111,12 @@ func newAuthHandlers(queries *db.Queries, pool *pgxpool.Pool, throttler ratelimi
 		throttler:                  throttler,
 		pushNotifier:               pushnotify.NewExpoNotifier(pushStore, pushStore, pushStore),
 	}
+	h.mcpOAuth = newMCPOAuth(h)
+	return h
 }
 
 func (h *authHandlers) register(api fiber.Router, mw middleware) {
+	h.mountMCPOAuth(api)
 	noCache := func(c *fiber.Ctx) error {
 		c.Set("Cache-Control", "no-store")
 		c.Set("Pragma", "no-cache")
@@ -134,6 +141,10 @@ func (h *authHandlers) register(api fiber.Router, mw middleware) {
 	meGroup.Post("/api-keys", mw.cookie, recent, h.CreateAPIKey)
 	meGroup.Get("/api-keys", mw.cookie, h.ListAPIKeys)
 	meGroup.Delete("/api-keys/:id", mw.cookie, recent, h.RevokeAPIKey)
+	// Devices an MCP host connected. Cookie-only, and revoke takes the same
+	// recent-auth proof as revoking a key. A grant token cannot call these.
+	meGroup.Get("/oauth-grants", mw.cookie, h.ListOAuthGrants)
+	meGroup.Delete("/oauth-grants/:id", mw.cookie, recent, h.RevokeOAuthGrant)
 
 	// Push-token registration is cookie-only for the same reason key management
 	// is: a leaked API key must not be able to redirect another device's push

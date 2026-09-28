@@ -265,26 +265,22 @@ freehire search <span class="text-foreground">"golang"</span> --remote --region 
     </div>
   </section>
 
-  <!-- MCP — the second surface over the same API and the same key. -->
+  <!-- MCP — HTTP hosts sign in in the browser; stdio hosts still take a key. -->
   <section id="mcp" class="scroll-mt-20 border-t border-border py-14 sm:py-16">
     <SectionLabel text="mcp" />
     <div class="mt-8 grid gap-x-12 gap-y-8 lg:grid-cols-[0.95fr_1.05fr]">
       <div>
-        <h2 class="text-2xl font-semibold tracking-tight">Same key, any AI host</h2>
+        <h2 class="text-2xl font-semibold tracking-tight">A URL, then sign in</h2>
         <p class="mt-4 max-w-md leading-relaxed text-muted-foreground">
-          <code class="font-mono text-foreground">freehire-mcp</code> exposes the same search, market-fit and
-          tracking tools over the
-          <a
-            href="https://modelcontextprotocol.io"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="text-foreground underline-offset-4 hover:underline">Model Context Protocol</a
-          > — so Claude Desktop, Claude Code or any MCP host can drive freehire directly. It runs via
-          <code class="font-mono text-foreground">npx</code>; no global install.
+          Claude, Cursor, and other hosts that speak HTTP connect with one URL. You approve the host
+          in the browser. Access lasts 30 days and shows up under
+          <a href={resolve('/my/api-keys')} class="font-medium text-foreground underline-offset-4 hover:underline">API keys</a>,
+          where you can disconnect it. Nothing in the config is a token.
         </p>
         <p class="mt-4 max-w-md text-sm leading-relaxed text-muted-foreground">
-          It shares the CLI's credentials: if you've run
-          <code class="font-mono text-foreground">freehire auth login</code>, omit
+          A stdio host still runs
+          <code class="font-mono text-foreground">npx freehire-mcp</code> with the same key as the CLI.
+          If you've run <code class="font-mono text-foreground">freehire auth login</code>, omit
           <code class="font-mono text-foreground">env</code> and it reads
           <code class="font-mono text-foreground">~/.freehire/creds.json</code>.
         </p>
@@ -294,16 +290,34 @@ freehire search <span class="text-foreground">"golang"</span> --remote --region 
           </Button>
         </div>
       </div>
-      <figure
-        class="overflow-hidden rounded-xl border border-border bg-secondary/60 font-mono text-sm shadow-sm"
-      >
-        <figcaption
-          class="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs text-muted-foreground"
+      <div class="flex flex-col gap-4">
+        <figure
+          class="overflow-hidden rounded-xl border border-border bg-secondary/60 font-mono text-sm shadow-sm"
         >
-          <span class="size-2.5 rounded-full bg-muted-foreground/30"></span>
-          ~/.claude.json
-        </figcaption>
-        <pre class="overflow-x-auto p-4 leading-relaxed">{`{
+          <figcaption
+            class="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs text-muted-foreground"
+          >
+            <span class="size-2.5 rounded-full bg-muted-foreground/30"></span>
+            HTTP host
+          </figcaption>
+          <pre class="overflow-x-auto p-4 leading-relaxed">{`{
+  "mcpServers": {
+    "freehire": {
+      "url": "https://freehire.me/api/v1/mcp/account"
+    }
+  }
+}`}</pre>
+        </figure>
+        <figure
+          class="overflow-hidden rounded-xl border border-border bg-secondary/60 font-mono text-sm shadow-sm"
+        >
+          <figcaption
+            class="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs text-muted-foreground"
+          >
+            <span class="size-2.5 rounded-full bg-muted-foreground/30"></span>
+            stdio host
+          </figcaption>
+          <pre class="overflow-x-auto p-4 leading-relaxed">{`{
   "mcpServers": {
     "freehire": {
       "command": "npx",
@@ -312,7 +326,8 @@ freehire search <span class="text-foreground">"golang"</span> --remote --region 
     }
   }
 }`}</pre>
-      </figure>
+        </figure>
+      </div>
     </div>
   </section>
 

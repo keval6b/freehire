@@ -1027,6 +1027,27 @@ type OauthAuthAttempt struct {
 	ConsumedAt           pgtype.Timestamptz `json:"consumed_at"`
 }
 
+type OauthAuthCode struct {
+	CodeHash            string             `json:"code_hash"`
+	ClientID            string             `json:"client_id"`
+	UserID              int64              `json:"user_id"`
+	RedirectUri         string             `json:"redirect_uri"`
+	CodeChallenge       string             `json:"code_challenge"`
+	CodeChallengeMethod string             `json:"code_challenge_method"`
+	Resource            string             `json:"resource"`
+	Scope               string             `json:"scope"`
+	ExpiresAt           pgtype.Timestamptz `json:"expires_at"`
+	ConsumedAt          pgtype.Timestamptz `json:"consumed_at"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
+type OauthClient struct {
+	ClientID     string             `json:"client_id"`
+	ClientName   string             `json:"client_name"`
+	RedirectUris []string           `json:"redirect_uris"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type OauthExchangeCode struct {
 	CodeHash             []byte             `json:"code_hash"`
 	UserID               int64              `json:"user_id"`
@@ -1040,6 +1061,22 @@ type OauthExchangeCode struct {
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
 	ConsumedAt           pgtype.Timestamptz `json:"consumed_at"`
+}
+
+type OauthGrant struct {
+	ID               int64              `json:"id"`
+	UserID           int64              `json:"user_id"`
+	ClientID         string             `json:"client_id"`
+	ClientName       string             `json:"client_name"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
+	LastUsedAt       pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt        pgtype.Timestamptz `json:"revoked_at"`
+	TokenVersion     int32              `json:"token_version"`
+	AccessTokenHash  pgtype.Text        `json:"access_token_hash"`
+	RefreshTokenHash pgtype.Text        `json:"refresh_token_hash"`
+	Resource         string             `json:"resource"`
+	Scope            string             `json:"scope"`
 }
 
 // Send ledger for the founder signup sequence. PK (user_id, step) = one send per pair, ever.

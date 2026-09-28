@@ -19,6 +19,7 @@ require (
 	github.com/fasthttp/websocket v1.5.12
 	github.com/getsentry/sentry-go v0.49.0
 	github.com/getsentry/sentry-go/fiber v0.49.0
+	github.com/go-oauth2/oauth2/v4 v4.6.0
 	github.com/go-redis/redis_rate/v10 v10.0.1
 	github.com/gofiber/contrib/websocket v1.3.4
 	github.com/gofiber/fiber/v2 v2.52.15
@@ -50,7 +51,7 @@ require (
 	golang.org/x/crypto v0.57.0
 	golang.org/x/image v0.45.0
 	golang.org/x/net v0.59.0
-	golang.org/x/oauth2 v0.36.0
+	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/time v0.16.0
 	gopkg.in/yaml.v3 v3.0.1

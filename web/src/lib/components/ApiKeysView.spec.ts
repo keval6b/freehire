@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, within } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ApiKey, User } from '$lib/types';
+import type { ApiKey, OAuthGrant, User } from '$lib/types';
 import ApiKeysView from './ApiKeysView.svelte';
 
 // The bug this whole change started from lives here: the revoke dialog demanded a password
@@ -10,6 +10,8 @@ import ApiKeysView from './ApiKeysView.svelte';
 const {
   listApiKeys,
   revokeApiKey,
+  listOAuthGrants,
+  revokeOAuthGrant,
   createApiKey,
   reauthenticatePassword,
   connectedIdentities,
@@ -20,6 +22,8 @@ const {
 } = vi.hoisted(() => ({
   listApiKeys: vi.fn(),
   revokeApiKey: vi.fn(),
+  listOAuthGrants: vi.fn(),
+  revokeOAuthGrant: vi.fn(),
   createApiKey: vi.fn(),
   reauthenticatePassword: vi.fn(),
   connectedIdentities: vi.fn(),
@@ -45,7 +49,15 @@ const { StubApiError } = vi.hoisted(() => ({
 vi.mock('$app/state', () => ({ page: { data: {}, url: new URL('http://localhost/') } }));
 vi.mock('$app/paths', () => ({ resolve: (p: string) => p, base: '', assets: '' }));
 vi.mock('$lib/api', () => ({
-  api: { listApiKeys, revokeApiKey, createApiKey, reauthenticatePassword, connectedIdentities },
+  api: {
+    listApiKeys,
+    revokeApiKey,
+    listOAuthGrants,
+    revokeOAuthGrant,
+    createApiKey,
+    reauthenticatePassword,
+    connectedIdentities,
+  },
   ApiError: StubApiError,
 }));
 vi.mock('$lib/auth.svelte', () => ({
@@ -95,6 +107,8 @@ beforeEach(() => {
   expiry.mockReset().mockReturnValue(null);
   listApiKeys.mockReset().mockResolvedValue([key]);
   revokeApiKey.mockReset().mockResolvedValue(undefined);
+  listOAuthGrants.mockReset().mockResolvedValue([]);
+  revokeOAuthGrant.mockReset().mockResolvedValue(undefined);
   createApiKey.mockReset();
   reauthenticatePassword.mockReset().mockResolvedValue('2099-01-01T00:00:00Z');
   connectedIdentities.mockReset().mockResolvedValue({
@@ -183,6 +197,46 @@ describe('ApiKeysView — revoking', () => {
 
     expect(forget).toHaveBeenCalled();
     expect(screen.getByText('CI bot')).toBeTruthy();
+  });
+});
+
+const device: OAuthGrant = {
+  id: 3,
+  client_name: 'Cursor',
+  created_at: '2026-09-01T00:00:00Z',
+  expires_at: '2026-10-01T00:00:00Z',
+  last_used_at: null,
+};
+
+describe('ApiKeysView — connected devices', () => {
+  it('lists a host with when it was connected and when access ends', async () => {
+    signedIn(true);
+    listOAuthGrants.mockResolvedValue([device]);
+    render(ApiKeysView);
+
+    const list = await screen.findByRole('list', { name: 'Connected devices' });
+    expect(within(list).getByText('Cursor')).toBeTruthy();
+    expect(within(list).getByText(/expires/)).toBeTruthy();
+    expect(within(list).getByText(/Connected/)).toBeTruthy();
+  });
+
+  it('disconnects a host from the dialog, not from the key list', async () => {
+    signedIn(true);
+    listOAuthGrants.mockResolvedValue([device]);
+    render(ApiKeysView);
+    const list = await screen.findByRole('list', { name: 'Connected devices' });
+
+    await fireEvent.click(within(list).getByRole('button', { name: 'Revoke' }));
+    await fireEvent.input(within(openDialog()).getByLabelText('Password'), {
+      target: { value: 'hunter2' },
+    });
+    await fireEvent.click(within(openDialog()).getByRole('button', { name: 'Disconnect' }));
+
+    expect(revokeOAuthGrant).toHaveBeenCalledWith(3);
+    expect(revokeApiKey).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(screen.queryByText('Cursor')).toBeNull();
+    });
   });
 });
 

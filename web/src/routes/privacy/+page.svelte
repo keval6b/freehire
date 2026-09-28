@@ -66,7 +66,8 @@
         <li>
           <span class="font-medium text-foreground">API keys.</span> If you create a personal API
           key, we store only a SHA-256 hash of it. The key itself is shown once at creation and is
-          unrecoverable afterwards.
+          unrecoverable afterwards. An MCP connection from an AI host is a separate grant that lasts
+          30 days; we store only a hash of its tokens, and you can revoke it from the same account page.
         </li>
         <li>
           <span class="font-medium text-foreground">Technical data.</span> Standard request logs
@@ -275,8 +276,8 @@
       <h2 class="text-xl font-semibold tracking-tight">Your rights</h2>
       <p class="text-sm leading-relaxed text-muted-foreground">
         You can access, correct, export, or delete your personal data at any time — most of it
-        directly from your account settings, or by contacting us. You can also revoke API keys and
-        unlink sign-in providers. If you are in the EU/EEA or UK, you have the rights granted by the
+        directly from your account settings, or by contacting us. You can also revoke API keys,
+        disconnect an MCP host, and unlink sign-in providers. If you are in the EU/EEA or UK, you have the rights granted by the
         GDPR, including the right to lodge a complaint with a supervisory authority.
       </p>
     </section>

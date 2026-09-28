@@ -119,6 +119,18 @@ describe('consumeReauthDraft', () => {
     expect(consumeReauthDraft('revoke-api-key')).toEqual({ surface: 'revoke-api-key', keyId: 7 });
   });
 
+  it('carries which device a disconnection was about', async () => {
+    await beginProviderReauthentication('google', '/my/api-keys', {
+      surface: 'revoke-oauth-grant',
+      grantId: 3,
+    });
+
+    expect(consumeReauthDraft('revoke-oauth-grant')).toEqual({
+      surface: 'revoke-oauth-grant',
+      grantId: 3,
+    });
+  });
+
   it('refuses a revocation draft whose key id is not a number', () => {
     storage.setItem(DRAFT_KEY, JSON.stringify({ surface: 'revoke-api-key', keyId: 'seven' }));
 

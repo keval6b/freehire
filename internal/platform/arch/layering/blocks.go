@@ -107,7 +107,7 @@ var blocks = map[string][]string{
 	},
 	"identity": {
 		"accountdelete", "accounts", "auth", "auth/apple", "auth/applejobs",
-		"auth/mobileauth", "auth/oauth", "auth/recentauth",
+		"auth/mcpoauth", "auth/mobileauth", "auth/oauth", "auth/recentauth",
 		// billing is here and not in ai, where plan lives, because a subscription is an
 		// attribute of the ACCOUNT. The constraint that pushed plan out of this block —
 		// ai and identity share a layer, so ai/assistant could not import it — does not
@@ -258,8 +258,10 @@ var blocks = map[string][]string{
 	// variant of ojcpmcp and does not import it: that one renders OJCP's schema for agents
 	// that branch on error codes, this one renders ours for a language model that reads
 	// prose. Both are adapters over the same Reader the handlers satisfy, which is why they
-	// sit in the same block rather than one reaching for the other.
-	"api": {"atsapply", "candidateprofile", "handler", "mcpapp", "ogimage", "ojcp", "ojcpmcp", "ratelimit", "realtime"},
+	// sit in the same block rather than one reaching for the other. accountmcp is the
+	// authenticated MCP server (OAuth grants, not the anonymous ChatGPT app): same block
+	// for the same reason, and it does not import mcpapp.
+	"api": {"accountmcp", "atsapply", "candidateprofile", "handler", "mcpapp", "ogimage", "ojcp", "ojcpmcp", "ratelimit", "realtime"},
 }
 
 // Assignment is the flattened package → block view the move script drives from.

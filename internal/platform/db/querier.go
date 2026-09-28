@@ -1076,6 +1076,8 @@ type Querier interface {
 	// Promote a suggested link to a confirmed one: the suggestion becomes job_id with
 	// link_source 'manual'. No-op (0 rows) when there is no pending suggestion.
 	ConfirmEmailLink(ctx context.Context, arg ConfirmEmailLinkParams) (int64, error)
+	// Single use. A second exchange finds no row.
+	ConsumeOAuthAuthCode(ctx context.Context, codeHash string) (int64, error)
 	// Whether this (feature, ref) was already charged. True means the caller is retrying,
 	// reconnecting, or recomputing work already paid for, and must not be charged again.
 	ConsumptionExists(ctx context.Context, arg ConsumptionExistsParams) (bool, error)
@@ -2550,6 +2552,10 @@ type Querier interface {
 	// cases, which would otherwise be judged as the active `applied` stage by
 	// silence.ThresholdDays.
 	GetNudgeForDelivery(ctx context.Context, id int64) (GetNudgeForDeliveryRow, error)
+	// A live, unconsumed code. The caller still has to check the PKCE verifier.
+	GetOAuthAuthCode(ctx context.Context, codeHash string) (GetOAuthAuthCodeRow, error)
+	GetOAuthClient(ctx context.Context, clientID string) (GetOAuthClientRow, error)
+	GetOAuthGrantByRefreshHash(ctx context.Context, refreshTokenHash pgtype.Text) (GetOAuthGrantByRefreshHashRow, error)
 	// The whole of a user's plan: how far each tier reaches. A future ultra_until means ultra,
 	// otherwise a future pro_until means pro, otherwise free.
 	//
@@ -3018,6 +3024,8 @@ type Querier interface {
 	// GPU-bound (~19 docs/s against a GPU embedding a wave in ~7s) — see
 	// hire-semantic-vectors-in-pg's "THE REAL BOTTLENECK IS POSTGRES, NOT THE GPU" note.
 	InsertJobSemanticChunks(ctx context.Context, arg InsertJobSemanticChunksParams) error
+	InsertOAuthAuthCode(ctx context.Context, arg InsertOAuthAuthCodeParams) error
+	InsertOAuthGrant(ctx context.Context, arg InsertOAuthGrantParams) (InsertOAuthGrantRow, error)
 	// Reserves a company slug for a claim in progress. The UNIQUE(company_slug) constraint is
 	// the whole race guard: two concurrent claims on the same slug both attempt this insert, one
 	// succeeds, and the loser's caller maps the unique violation to a clean conflict — see
@@ -4135,6 +4143,9 @@ type Querier interface {
 	// "you signed up a few days ago and still have no alert" an hour apart. From two
 	// mails in an hour, a stranger is indistinguishable from a spammer.
 	ListNoAlertCandidates(ctx context.Context, arg ListNoAlertCandidatesParams) ([]ListNoAlertCandidatesRow, error)
+	// Devices still on the account. Revoked rows are gone from the list; an expired
+	// grant stays so the page can show that it ended.
+	ListOAuthGrantsByUser(ctx context.Context, userID int64) ([]ListOAuthGrantsByUserRow, error)
 	// ListOpenJobCompanySpellings returns every distinct way an open posting spells its
 	// company's name. 412,648 rows as of 2026-09-16, measured before the NOT is_private
 	// clause below was added — that population is user-pasted JDs and does not move the
@@ -5847,13 +5858,16 @@ type Querier interface {
 	// the address verified — receiving the code IS proof of control, so a reset doubles as
 	// verification and an unverified account stops being a merge target.
 	//
-	// The account's API keys are destroyed in the same statement. A reset is how an owner
-	// takes an account back, so whoever knew the old password must lose every credential
-	// minted under it — and a key authenticates against api_keys alone, so bumping
-	// token_version does not reach it. The DELETE is a data-modifying CTE rather than a
-	// second statement on purpose: Postgres runs it exactly once and to completion whether
-	// or not the primary query reads its output, which welds the revocation to the reset so
-	// no call site can perform one without the other.
+	// The account's API keys and MCP OAuth grants are destroyed in the same statement.
+	// A reset is how an owner takes an account back, so whoever knew the old password
+	// must lose every credential minted under it — and a key authenticates against
+	// api_keys alone, so bumping token_version does not reach it. A grant does check
+	// token_version, but the row would otherwise stay listed as a device until it
+	// expired; deleting it is the same revocation the keys get. The DELETEs are
+	// data-modifying CTEs rather than a second statement on purpose: Postgres runs
+	// them exactly once and to completion whether or not the primary query reads
+	// their output, which welds the revocation to the reset so no call site can
+	// perform one without the other.
 	ResetUserPassword(ctx context.Context, arg ResetUserPasswordParams) (int32, error)
 	// Catalogue pruning: the queries that find, and eventually remove, jobs that do not
 	// belong on an IT job board. See the catalog-pruning capability spec.
@@ -5984,6 +5998,7 @@ type Querier interface {
 	// migration comment: there is no self-service handoff on this MVP, so freeing the slug on
 	// revoke would let anyone re-claim a company an admin just decided to shut out.
 	RevokeCompanyAccount(ctx context.Context, userID int64) (CompanyAccount, error)
+	RevokeOAuthGrant(ctx context.Context, arg RevokeOAuthGrantParams) (int64, error)
 	// Whether the caller already received a reward for this ref (e.g. an accepted contribution).
 	// True means the reward was already granted and must not be granted again (idempotency).
 	RewardExists(ctx context.Context, arg RewardExistsParams) (bool, error)
@@ -6013,6 +6028,9 @@ type Querier interface {
 	// cannot type, and the surplus is bounded: a page holds few distinct companies, and a
 	// fingerprint belonging to another of them simply has no rows.
 	RoleClusterCountsFor(ctx context.Context, arg RoleClusterCountsForParams) ([]RoleClusterCountsForRow, error)
+	// Replace the current access and refresh hashes. expires_at is not written:
+	// a refresh must not move the 30-day deadline.
+	RotateOAuthGrantTokens(ctx context.Context, arg RotateOAuthGrantTokensParams) (RotateOAuthGrantTokensRow, error)
 	// Save (bookmark) a job for a user. Idempotent and independent of a prior view:
 	// it inserts the row (viewed_at defaults) or refreshes saved_at in place.
 	SaveJob(ctx context.Context, arg SaveJobParams) (SaveJobRow, error)
@@ -6056,8 +6074,11 @@ type Querier interface {
 	// first loses all three ways in. The keys matter most of the three: they are the only
 	// credential that survives a token_version bump (a key is matched against api_keys by
 	// its own hash and never consults users), and one minted with expires_at NULL would
-	// otherwise outlive the takeover forever. Same data-modifying-CTE reasoning as
-	// ResetUserPassword — the revocation cannot be separated from the seizure.
+	// otherwise outlive the takeover forever. MCP grants are deleted in the same
+	// statement: they do fail on the version bump, and removing the rows is what stops
+	// them appearing as connected devices on an account the squatter no longer owns.
+	// Same data-modifying-CTE reasoning as ResetUserPassword — the revocation cannot
+	// be separated from the seizure.
 	// Returns the new generation for the session the sign-in is about to mint.
 	SeizeUnverifiedAccount(ctx context.Context, id int64) (int32, error)
 	// ---------------------------------------------------------------------------
@@ -7101,6 +7122,9 @@ type Querier interface {
 	// enable/channels gate — one account-level settings row, one write path. Returns
 	// the stored row.
 	UpsertNotificationSettings(ctx context.Context, arg UpsertNotificationSettingsParams) (NotificationSetting, error)
+	// Register (or replace) a dynamically registered public client. client_id is
+	// server-minted; redirect_uris is the exact list the authorize endpoint matches.
+	UpsertOAuthClient(ctx context.Context, arg UpsertOAuthClientParams) error
 	// Register (or refresh) a device's push token. A token identifies one device
 	// install, not one user, so the conflict target is the token itself: if it
 	// already belongs to a different account, this reassigns it to the caller
@@ -7197,6 +7221,9 @@ type Querier interface {
 	// add-employer-company-accounts' company-info spec delta), and this importer's job is
 	// simply to not be the one that undoes it on its next scheduled run.
 	UpsertYCCompany(ctx context.Context, arg UpsertYCCompanyParams) error
+	// Resolve a presented access token. The token_version join is what makes a
+	// sign-out-everywhere or a password change fail the grant on its next use.
+	UseOAuthGrantByAccessHash(ctx context.Context, accessTokenHash pgtype.Text) (UseOAuthGrantByAccessHashRow, error)
 	// Slim email lookup for the delete-account confirmation, which compares the typed
 	// address against the caller's own. A primitive so the handler needs no full user row
 	// (same shape as GetUserRole).

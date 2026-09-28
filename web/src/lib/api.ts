@@ -69,6 +69,7 @@ import type {
   VoteResult,
   ApiKey,
   CreatedApiKey,
+  OAuthGrant,
   WebhookConfig,
   ConnectedIdentities,
   SavedSearch,
@@ -1688,6 +1689,16 @@ export function createApi(
     await call(`/api/v1/me/api-keys/${id}`, { method: 'DELETE' });
   }
 
+  /** MCP hosts this account has approved. Metadata only — no token. */
+  async function listOAuthGrants(): Promise<OAuthGrant[]> {
+    return requestData<OAuthGrant[]>('/api/v1/me/oauth-grants');
+  }
+
+  /** Disconnect one host. It stops authenticating immediately. */
+  async function revokeOAuthGrant(id: number): Promise<void> {
+    await call(`/api/v1/me/oauth-grants/${id}`, { method: 'DELETE' });
+  }
+
   // --- Webhook (saved-search alerts) -----------------------------------------
   //
   // The account's single webhook destination for saved-search matches (the
@@ -3119,6 +3130,8 @@ export function createApi(
     listApiKeys,
     createApiKey,
     revokeApiKey,
+    listOAuthGrants,
+    revokeOAuthGrant,
     getWebhook,
     createOrUpdateWebhook,
     setWebhookEnabled,

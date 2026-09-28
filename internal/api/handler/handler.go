@@ -917,6 +917,14 @@ func Register(app *fiber.App, cfg Config) {
 	// not a slug.
 	ojcpH.register(api, mw)
 	mcpappH.register(api, mw)
+	// The authenticated MCP server. Anonymous hosts stay on mcpapp and OJCP.
+	(&accountMCPHandlers{
+		oauth:    authH.mcpOAuth,
+		search:   searchH,
+		resume:   resumeH,
+		tracking: trackingH,
+		queries:  queries,
+	}).register(api, mw)
 	jobsH.register(api, mw)
 	companiesH.register(api, mw)
 	geoH.register(api, mw)
