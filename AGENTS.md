@@ -226,6 +226,7 @@ Each is self-contained and can be read independently.
 | **Accounts** (identity resolution, seizure rule, mailed codes) | [internal/identity/accounts/AGENTS.md](internal/identity/accounts/AGENTS.md) |
 | **Auth primitives** (JWT, API keys, cookie transport, middleware) | [internal/identity/auth/AGENTS.md](internal/identity/auth/AGENTS.md) |
 | **OAuth sign-in** (provider registry, state cookie, identity resolution) | [internal/identity/auth/oauth/AGENTS.md](internal/identity/auth/oauth/AGENTS.md) |
+| **MCP OAuth grants** (the authorization server for remote MCP hosts: PKCE, the device grant, the generation check) | [internal/identity/auth/mcpoauth/AGENTS.md](internal/identity/auth/mcpoauth/AGENTS.md) |
 | **Discounts** (promo codes, invite links, the reward earned by an invoice that collected) | [internal/identity/promo/AGENTS.md](internal/identity/promo/AGENTS.md) |
 | **`internal/candidate`** — the block itself: what it is, what it may import | [internal/candidate/AGENTS.md](internal/candidate/AGENTS.md) |
 | **AI fit analysis** (three-stage LLM prompt-chain, score, verdict, stream) | [internal/candidate/matchanalysis/AGENTS.md](internal/candidate/matchanalysis/AGENTS.md) |
@@ -280,6 +281,7 @@ Each is self-contained and can be read independently.
 | **HTTP handlers** (response shapes, error rendering, routes) | [internal/api/handler/AGENTS.md](internal/api/handler/AGENTS.md) |
 | **Auto-apply browser driver** (headless Chrome: DOM scan, reconcile, resolve, fill/submit) | [internal/api/atsapply/AGENTS.md](internal/api/atsapply/AGENTS.md) |
 | **ChatGPT app** (the SECOND MCP server: why it is not the OJCP one, the annotations, the dropped filter) | [internal/api/mcpapp/AGENTS.md](internal/api/mcpapp/AGENTS.md) |
+| **Account MCP** (the authenticated MCP server: same catalogue and tracking as the assistant, OAuth grants) | [internal/api/accountmcp/AGENTS.md](internal/api/accountmcp/AGENTS.md) |
 | **OJCP provider** (the agent-facing standard: the projection, both transports, the manifest) | [internal/api/ojcp/AGENTS.md](internal/api/ojcp/AGENTS.md) |
 
 ## Conventions

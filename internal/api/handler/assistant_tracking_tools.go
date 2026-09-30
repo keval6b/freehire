@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/strelov1/freehire/internal/ai/assistant"
-	"github.com/strelov1/freehire/internal/application/appevent"
 	"github.com/strelov1/freehire/internal/application/jobtracking"
 	"github.com/strelov1/freehire/internal/application/userjob"
 )
@@ -22,23 +21,20 @@ func (h *assistantHandlers) assistantTrackingTools() []assistant.Tool {
 		h.slugActionTool(
 			"save_job",
 			"Bookmark a vacancy for the user. Idempotent.",
-			func(ctx context.Context, userID int64, slug string) (jobtracking.Interaction, error) {
-				return h.tracking.tracking.SaveJob(ctx, userID, slug)
+			func(ctx context.Context, userID int64, slug string) (any, error) {
+				return h.catalogue().saveJob(ctx, userID, slug)
 			}),
 		h.slugActionTool(
 			"unsave_job",
 			"Remove a vacancy from the user's bookmarks. Idempotent.",
-			func(ctx context.Context, userID int64, slug string) (jobtracking.Interaction, error) {
-				return h.tracking.tracking.Unsave(ctx, userID, slug)
+			func(ctx context.Context, userID int64, slug string) (any, error) {
+				return h.catalogue().unsaveJob(ctx, userID, slug)
 			}),
 		h.slugActionTool(
 			"apply_job",
 			"Mark a vacancy as applied to. This records the user's own application; it does not submit anything to the employer.",
-			func(ctx context.Context, userID int64, slug string) (jobtracking.Interaction, error) {
-				// The assistant acts as the caller, but the ledger records who
-				// observed the application, and that was the agent — not a person
-				// filling in their own board.
-				return h.tracking.tracking.MarkApplied(ctx, userID, slug, appevent.SourceAssistant)
+			func(ctx context.Context, userID int64, slug string) (any, error) {
+				return h.catalogue().applyJob(ctx, userID, slug)
 			}),
 		h.trackJobTool(),
 		h.myJobsTool(),
@@ -47,7 +43,7 @@ func (h *assistantHandlers) assistantTrackingTools() []assistant.Tool {
 
 // slugActionTool builds the tools that take a single vacancy slug and perform one
 // idempotent action on the caller's interaction with it.
-func (h *assistantHandlers) slugActionTool(name, description string, act func(context.Context, int64, string) (jobtracking.Interaction, error)) assistant.Tool {
+func (h *assistantHandlers) slugActionTool(name, description string, act func(context.Context, int64, string) (any, error)) assistant.Tool {
 	return assistant.Tool{
 		Name:        name,
 		Description: description,
@@ -63,17 +59,7 @@ func (h *assistantHandlers) slugActionTool(name, description string, act func(co
 			if err := assistant.DecodeArgs(raw, &in); err != nil {
 				return nil, err
 			}
-			if in.Slug == "" {
-				return nil, errors.New("slug is required")
-			}
-			if h.tracking == nil || h.tracking.tracking == nil {
-				return nil, errors.New("job tracking is not available")
-			}
-			res, err := act(ctx, userID, in.Slug)
-			if err != nil {
-				return nil, trackingToolError(in.Slug, err)
-			}
-			return toResponse(res), nil
+			return act(ctx, userID, in.Slug)
 		},
 	}
 }
@@ -102,25 +88,7 @@ func (h *assistantHandlers) trackJobTool() assistant.Tool {
 			if err := assistant.DecodeArgs(raw, &in); err != nil {
 				return nil, err
 			}
-			if in.Slug == "" {
-				return nil, errors.New("slug is required")
-			}
-			if in.Stage == nil && in.Note == nil {
-				return nil, errors.New("nothing to change — pass a stage, a note, or both")
-			}
-			// Reject an invented stage here rather than letting the service's generic
-			// error come back: the model needs to see the closed vocabulary to retry.
-			if in.Stage != nil && !userjob.ValidStage(*in.Stage) {
-				return nil, fmt.Errorf("unknown stage %q — valid stages are: %s", *in.Stage, strings.Join(userjob.Stages, ", "))
-			}
-			if h.tracking == nil || h.tracking.tracking == nil {
-				return nil, errors.New("job tracking is not available")
-			}
-			res, err := h.tracking.tracking.Track(ctx, userID, in.Slug, in.Stage, in.Note, appevent.SourceAssistant)
-			if err != nil {
-				return nil, trackingToolError(in.Slug, err)
-			}
-			return toResponse(res), nil
+			return h.catalogue().trackJob(ctx, userID, in.Slug, in.Stage, in.Note)
 		},
 	}
 }
@@ -145,27 +113,7 @@ func (h *assistantHandlers) myJobsTool() assistant.Tool {
 			if err := assistant.DecodeArgs(raw, &in); err != nil {
 				return nil, err
 			}
-			if h.tracking == nil || h.tracking.tracking == nil {
-				return nil, errors.New("job tracking is not available")
-			}
-			limit := in.Limit
-			if limit <= 0 {
-				limit = assistantDefaultSearchLimit
-			}
-			limit = min(limit, assistantMaxSearchLimit)
-
-			listing, err := h.tracking.tracking.ListTracked(ctx, userID, in.Filter, int32(limit), 0)
-			if errors.Is(err, jobtracking.ErrInvalidFilter) {
-				return nil, fmt.Errorf("unknown filter %q — use all, viewed, saved, applied, board or dismissed", in.Filter)
-			}
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{
-				"filter": string(listing.Filter),
-				"total":  listing.Total(),
-				"jobs":   listing.Items,
-			}, nil
+			return h.catalogue().myJobs(ctx, userID, in.Filter, in.Limit)
 		},
 	}
 }

@@ -1,6 +1,10 @@
 // Package accountmcp is the authenticated MCP server. Hosts connect with an
 // OAuth grant; the tools act as that account. The public ChatGPT server
 // (internal/api/mcpapp) and the OJCP server stay anonymous.
+//
+// This package is the transport. The handler registers each tool and calls the
+// same catalogue and tracking functions the in-app assistant uses. There is no
+// second set of search, job, or save operations here.
 package accountmcp
 
 import (
@@ -34,180 +38,63 @@ func userID(ctx context.Context) (int64, error) {
 	return id, nil
 }
 
-// Service is the account the tools act for. The HTTP handlers implement it
-// with the same services the website uses. A missing user in the context is
-// the caller's bug: the bearer check rejects that request before a tool runs.
-type Service interface {
-	WhoAmI(ctx context.Context, userID int64) (any, error)
-	Facets(ctx context.Context, userID int64, filters map[string][]string) (any, error)
-	Search(ctx context.Context, userID int64, query string, limit int, filters map[string][]string) (any, error)
-	Job(ctx context.Context, userID int64, slug string) (any, error)
-	Company(ctx context.Context, userID int64, slug string) (any, error)
-	MarketFit(ctx context.Context, userID int64, skills []string, filters map[string][]string) (any, error)
-	Save(ctx context.Context, userID int64, slug string) (any, error)
-	Unsave(ctx context.Context, userID int64, slug string) (any, error)
-	Apply(ctx context.Context, userID int64, slug string) (any, error)
-	Stage(ctx context.Context, userID int64, slug, stage, note string) (any, error)
-	Note(ctx context.Context, userID int64, slug, note string) (any, error)
-	My(ctx context.Context, userID int64) (any, error)
+// Server is the MCP server the handler registers tools on. It exists so the
+// handler can mount tools without importing the SDK.
+type Server struct {
+	inner *mcp.Server
 }
 
-// Handler serves the tools over stateless streamable HTTP.
-func Handler(s Service) http.Handler {
+// Handler serves the tools over stateless streamable HTTP. mount registers
+// them on each server the transport builds.
+func Handler(mount func(*Server)) http.Handler {
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return newServer(s)
+		return newServer(mount).inner
 	}, &mcp.StreamableHTTPOptions{Stateless: true})
 }
 
-func newServer(s Service) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "freehire", Version: version}, &mcp.ServerOptions{Instructions: instructions})
-	addRead(server, "whoami", "Who am I", "The signed-in account: id and email.", func(ctx context.Context, _ struct{}) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.WhoAmI(ctx, id)
-	})
-	addRead(server, "facets", "List filters", "Live filter vocabulary and counts. Call this before filtering a search.", func(ctx context.Context, in filterInput) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.Facets(ctx, id, in.Filters)
-	})
-	addRead(server, "search", "Search jobs", "Search open IT postings. Geography filters union. Returns previews; call job for one posting in full.", func(ctx context.Context, in searchInput) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.Search(ctx, id, in.Query, in.Limit, in.Filters)
-	})
-	addRead(server, "job", "Read one job", "Read one posting in full by its public slug.", func(ctx context.Context, in slugInput) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.Job(ctx, id, in.Slug)
-	})
-	addRead(server, "company", "Read one employer", "Read one employer and a page of its open postings, by company slug.", func(ctx context.Context, in slugInput) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.Company(ctx, id, in.Slug)
-	})
-	addRead(server, "market_fit", "Score skills against the market", "What share of the filtered open vacancies list at least one of these skills, and which missing skills unlock the most.", func(ctx context.Context, in marketInput) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.MarketFit(ctx, id, in.Skills, in.Filters)
-	})
-	addWrite(server, "save", "Save a job", "Bookmark a vacancy. Idempotent.", func(ctx context.Context, in slugInput) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.Save(ctx, id, in.Slug)
-	})
-	addWrite(server, "unsave", "Unsave a job", "Remove a bookmark. Idempotent.", func(ctx context.Context, in slugInput) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.Unsave(ctx, id, in.Slug)
-	})
-	addWrite(server, "apply", "Mark applied", "Record that the account applied. This does not submit anything to the employer.", func(ctx context.Context, in slugInput) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.Apply(ctx, id, in.Slug)
-	})
-	addWrite(server, "stage", "Set application stage", "Set the stage and, optionally, a note on a tracked vacancy.", func(ctx context.Context, in stageInput) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.Stage(ctx, id, in.Slug, in.Stage, in.Note)
-	})
-	addWrite(server, "note", "Set a note", "Store a free-text note against a tracked vacancy.", func(ctx context.Context, in noteInput) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.Note(ctx, id, in.Slug, in.Note)
-	})
-	addRead(server, "my", "List my jobs", "Vacancies this account has saved, applied to, or staged.", func(ctx context.Context, _ struct{}) (any, error) {
-		id, err := userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.My(ctx, id)
-	})
-	return server
-}
-
-type filterInput struct {
-	Filters map[string][]string `json:"filters,omitempty"`
-}
-
-type searchInput struct {
-	Query   string              `json:"q,omitempty"`
-	Limit   int                 `json:"limit,omitempty"`
-	Filters map[string][]string `json:"filters,omitempty"`
-}
-
-type slugInput struct {
-	Slug string `json:"slug"`
-}
-
-type marketInput struct {
-	Skills  []string            `json:"skills"`
-	Filters map[string][]string `json:"filters,omitempty"`
-}
-
-type stageInput struct {
-	Slug  string `json:"slug"`
-	Stage string `json:"stage,omitempty"`
-	Note  string `json:"note,omitempty"`
-}
-
-type noteInput struct {
-	Slug string `json:"slug"`
-	Note string `json:"note"`
-}
-
-func addRead[In any](server *mcp.Server, name, title, description string, fn func(context.Context, In) (any, error)) {
-	ro := true
-	open := true
-	dest := false
-	mcp.AddTool(server, &mcp.Tool{
-		Name: name, Title: title, Description: description,
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: ro, OpenWorldHint: &open, DestructiveHint: &dest},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
-		return call(ctx, in, fn)
-	})
-}
-
-func addWrite[In any](server *mcp.Server, name, title, description string, fn func(context.Context, In) (any, error)) {
-	open := true
-	dest := false
-	mcp.AddTool(server, &mcp.Tool{
-		Name: name, Title: title, Description: description,
-		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, OpenWorldHint: &open, DestructiveHint: &dest},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
-		return call(ctx, in, fn)
-	})
-}
-
-func call[In any](ctx context.Context, in In, fn func(context.Context, In) (any, error)) (*mcp.CallToolResult, any, error) {
-	out, err := fn(ctx, in)
-	if err == nil {
-		return nil, out, nil
+func newServer(mount func(*Server)) *Server {
+	inner := mcp.NewServer(&mcp.Implementation{Name: "freehire", Version: version}, &mcp.ServerOptions{Instructions: instructions})
+	s := &Server{inner: inner}
+	if mount != nil {
+		mount(s)
 	}
+	return s
+}
+
+// AddRead registers a tool that does not change the account. The account id
+// comes from the grant; a request without one never reaches fn.
+func AddRead[In any](server *Server, name, title, description string, fn func(context.Context, int64, In) (any, error)) {
+	add(server, name, title, description, true, fn)
+}
+
+// AddWrite registers a tool that changes the account's own saved jobs or
+// application board. It does not submit anything to an employer.
+func AddWrite[In any](server *Server, name, title, description string, fn func(context.Context, int64, In) (any, error)) {
+	add(server, name, title, description, false, fn)
+}
+
+func add[In any](server *Server, name, title, description string, readOnly bool, fn func(context.Context, int64, In) (any, error)) {
+	open := true
+	dest := false
+	mcp.AddTool(server.inner, &mcp.Tool{
+		Name: name, Title: title, Description: description,
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, OpenWorldHint: &open, DestructiveHint: &dest},
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+		id, err := userID(ctx)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		out, err := fn(ctx, id, in)
+		if err != nil {
+			return toolError(err), nil, nil
+		}
+		return nil, out, nil
+	})
+}
+
+func toolError(err error) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
-	}, nil, nil
+	}
 }

@@ -5,15 +5,12 @@ import (
 
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"sort"
 	"strings"
 
 	"github.com/strelov1/freehire/internal/ai/assistant"
-	"github.com/strelov1/freehire/internal/job/jobview"
-	"github.com/strelov1/freehire/internal/platform/db"
 	"github.com/strelov1/freehire/internal/search/search"
 )
 
@@ -102,21 +99,7 @@ func (h *assistantHandlers) facetsTool() assistant.Tool {
 			if err := assistant.DecodeArgs(raw, &in); err != nil {
 				return nil, err
 			}
-			if h.search == nil || h.search.facets == nil {
-				return nil, errors.New("search is not available")
-			}
-			vals, err := in.Filters.values()
-			if err != nil {
-				return nil, err
-			}
-			res, err := h.search.facets.FacetCounts(ctx, search.FacetParams{
-				Filter: search.FilterFromValues(vals),
-				Facets: facetAttributes(),
-			})
-			if err != nil {
-				return nil, err
-			}
-			return facetView(res), nil
+			return h.catalogue().facets(ctx, in.Filters)
 		},
 	}
 }
@@ -149,47 +132,7 @@ func (h *assistantHandlers) searchJobsTool() assistant.Tool {
 			if err := assistant.DecodeArgs(raw, &in); err != nil {
 				return nil, err
 			}
-			if h.search == nil || h.search.search == nil {
-				return nil, errors.New("search is not available")
-			}
-			vals, err := in.Filters.values()
-			if err != nil {
-				return nil, err
-			}
-
-			limit := in.Limit
-			if limit <= 0 {
-				limit = assistantDefaultSearchLimit
-			}
-			limit = min(limit, assistantMaxSearchLimit)
-			offset := max(in.Offset, 0)
-
-			// An empty query has no relevance to rank by, so browse the freshest first —
-			// the same rule the HTTP search applies.
-			var order []string
-			if in.Query == "" {
-				order = []string{"posted_at:desc"}
-			}
-
-			res, err := h.search.search.Search(ctx, search.SearchParams{
-				Query:  in.Query,
-				Filter: search.FilterFromValues(vals),
-				Sort:   order,
-				Limit:  limit,
-				Offset: offset,
-			})
-			if err != nil {
-				return nil, err
-			}
-			if err := h.search.hydrateDescriptions(ctx, res.Hits); err != nil {
-				return nil, err
-			}
-			jobs := make([]jobview.Job, len(res.Hits))
-			for i, hit := range res.Hits {
-				hit.Description = formatDescription(hit.Description, "markdown")
-				jobs[i] = hit.Job
-			}
-			return map[string]any{"total": res.Total, "limit": limit, "offset": offset, "jobs": jobs}, nil
+			return h.catalogue().searchJobs(ctx, in.Query, in.Filters, in.Limit, in.Offset)
 		},
 	}
 }
@@ -211,19 +154,7 @@ func (h *assistantHandlers) getJobTool() assistant.Tool {
 			if err := assistant.DecodeArgs(raw, &in); err != nil {
 				return nil, err
 			}
-			if in.Slug == "" {
-				return nil, errors.New("slug is required")
-			}
-			job, err := h.queries.GetJobBySlug(ctx, in.Slug)
-			if err != nil {
-				return nil, fmt.Errorf("no vacancy with slug %q", in.Slug)
-			}
-			view, err := jobview.FromRow(job)
-			if err != nil {
-				return nil, err
-			}
-			view.Description = formatDescription(view.Description, "markdown")
-			return view, nil
+			return h.catalogue().job(ctx, in.Slug, false)
 		},
 	}
 }
@@ -245,26 +176,7 @@ func (h *assistantHandlers) getCompanyTool() assistant.Tool {
 			if err := assistant.DecodeArgs(raw, &in); err != nil {
 				return nil, err
 			}
-			if in.Slug == "" {
-				return nil, errors.New("slug is required")
-			}
-			company, err := h.queries.GetCompany(ctx, in.Slug)
-			if err != nil {
-				return nil, fmt.Errorf("no company with slug %q", in.Slug)
-			}
-			jobs, err := h.queries.ListJobsByCompany(ctx, db.ListJobsByCompanyParams{
-				CompanySlug: in.Slug,
-				Limit:       assistantDefaultSearchLimit,
-				Offset:      0,
-			})
-			if err != nil {
-				return nil, err
-			}
-			views, err := jobview.FromRows(jobs)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"company": companyViewFrom(company), "jobs": views}, nil
+			return h.catalogue().company(ctx, in.Slug)
 		},
 	}
 }
@@ -294,31 +206,7 @@ func (h *assistantHandlers) marketFitTool() assistant.Tool {
 			if err := assistant.DecodeArgs(raw, &in); err != nil {
 				return nil, err
 			}
-			if h.search == nil || h.search.facets == nil {
-				return nil, errors.New("search is not available")
-			}
-			skills := nonEmptyStrings(in.Skills)
-			if len(skills) == 0 {
-				return nil, errors.New("skills is required — list the canonical slugs to measure")
-			}
-			if len(skills) > maxCoverageSkills {
-				return nil, fmt.Errorf("too many skills (max %d)", maxCoverageSkills)
-			}
-			vals, err := in.Filters.values()
-			if err != nil {
-				return nil, err
-			}
-			// The measured skills must not also filter the role, or coverage would be
-			// 100% by construction — the same reason the HTTP endpoint strips them.
-			stripSkillParams(vals)
-
-			v, err := h.resume.coverageFor(ctx, search.FilterFromValues(vals), skills, skills, nil, skills)
-			if err != nil {
-				return nil, err
-			}
-			// Coherence is a CV-section metric; a flat skill list has no sections.
-			v.CoherencePercent = 0
-			return v, nil
+			return h.catalogue().marketFit(ctx, in.Skills, in.Filters)
 		},
 	}
 }

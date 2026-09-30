@@ -3,11 +3,17 @@
 The MCP server freehire's ChatGPT app is built on. Read-only, anonymous, mounted at
 `/api/v1/mcp`.
 
-## Why there are two MCP servers
+## Why there are two anonymous MCP servers
 
 `internal/api/ojcpmcp` serves the Open Job Context Protocol. This one serves OpenAI's Apps
 SDK. They share the reader, the search core and the visibility predicate, and differ in
 everything above them — which is the reason there are two rather than one with a flag.
+
+The authenticated server (`internal/api/accountmcp`) is a third surface, not a flag on
+either of these. It writes to the signed-in account's board and returns the assistant's
+`jobview.Job`, so it does not use this `Reader`. It shares the catalogue load and the
+tracking actions through `catalogueTools` in the handler, which is also what the in-app
+assistant calls. Tool registration stays separate.
 
 | | `ojcpmcp` | `mcpapp` |
 |---|---|---|

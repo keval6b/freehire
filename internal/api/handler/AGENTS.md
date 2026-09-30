@@ -182,7 +182,10 @@ ends at its step cap.
 `assistant_tools.go` / `assistant_tracking_tools.go` / `assistant_cv_tools.go` /
 `assistant_profile_tool.go` / `assistant_present_tool.go` / `assistant_page_tools.go`
 build the agent's tools from the same services these handlers use, and
-`assistantRegistry` picks the set for a session's preset. The loop itself lives in
+`assistantRegistry` picks the set for a session's preset. The catalogue and tracking
+bodies live in `catalogue_tools.go`, which the authenticated MCP server
+([accountmcp](../accountmcp/AGENTS.md)) calls too — a tool added on only one of those
+surfaces is how the two start disagreeing about a posting. The loop itself lives in
 [internal/ai/assistant](../../ai/assistant/AGENTS.md).
 
 `read_current_page` (`assistant_page_tools.go`) is the only tool that leaves this
